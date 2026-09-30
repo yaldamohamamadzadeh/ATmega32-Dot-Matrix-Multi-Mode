@@ -1,0 +1,765 @@
+#include <mega32.h>
+#include <delay.h>
+
+#define KEY1 0
+#define KEY2 1
+#define KEY3 2
+
+#define MODE1 1
+#define MODE2 2
+#define MODE3 3
+#define MODE4 4
+#define MODE5 5
+#define MODE6 6
+
+#define MATRIX_DELAY 1
+#define STEP_TIME 500
+#define NUMBER_TIME 1000
+#define HOLD_TIME 1000
+
+unsigned char screen[8];
+
+flash unsigned char numbers[10][7] =
+{
+    {0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110},
+    {0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110},
+    {0b01110,0b10001,0b00001,0b00010,0b00100,0b01000,0b11111},
+    {0b11110,0b00001,0b00001,0b01110,0b00001,0b00001,0b11110},
+    {0b00010,0b00110,0b01010,0b10010,0b11111,0b00010,0b00010},
+    {0b11111,0b10000,0b10000,0b11110,0b00001,0b00001,0b11110},
+    {0b00110,0b01000,0b10000,0b11110,0b10001,0b10001,0b01110},
+    {0b11111,0b00001,0b00010,0b00100,0b01000,0b01000,0b01000},
+    {0b01110,0b10001,0b10001,0b01110,0b10001,0b10001,0b01110},
+    {0b01110,0b10001,0b10001,0b01111,0b00001,0b00010,0b01100}
+};
+
+unsigned char screen_row = 0;
+
+unsigned char mode = MODE1;
+
+unsigned char column = 7;
+unsigned char direction = 0;
+
+unsigned char border_position = 0;
+
+unsigned char number = 0;
+
+signed char scroll_position = 8;
+
+unsigned int animation_time = 0;
+
+
+void clear_screen(void)
+{
+    unsigned char i;
+
+    for(i=0; i<8; i++)
+    {
+        screen[i] = 0;
+    }
+}
+
+
+
+
+void matrix_refresh(void)
+{
+    unsigned char data;
+
+
+    PORTA = 0x00;
+    PORTC = 0xFF;
+
+    data = screen[screen_row];
+
+
+    PORTA = (1 << screen_row);
+
+
+    PORTC = ~data;
+
+    delay_ms(MATRIX_DELAY);
+
+   
+
+    PORTA = 0x00;
+    PORTC = 0xFF;
+
+    screen_row++;
+
+    if(screen_row >= 8)
+        screen_row = 0;
+}
+
+
+/*========================================================
+                       MODE 1
+========================================================*/
+
+void draw_mode1(void)
+{
+    unsigned char i;
+
+    clear_screen();
+
+    for(i=0; i<8; i++)
+    {
+        screen[i] = (1 << column);
+    }
+}
+
+
+/*========================================================
+                       MODE 2
+========================================================*/
+
+void draw_mode2(void)
+{
+    unsigned char row;
+    unsigned char col;
+
+    clear_screen();
+
+
+    if(border_position < 8)
+    {
+        row = 0;
+        col = 7 - border_position;
+    }
+
+   
+    else if(border_position < 15)
+    {
+        row = border_position - 7;
+        col = 0;
+    }
+
+    
+    else if(border_position < 22)
+    {
+        row = 7;
+        col = border_position - 14;
+    }
+
+    
+
+    else
+    {
+        row = 28 - border_position;
+        col = 7;
+    }
+
+    screen[row] = (1 << col);
+}
+
+
+/*========================================================
+                       MODE 3
+========================================================*/
+
+void draw_mode3(void)
+{
+    unsigned char i;
+
+    clear_screen();
+
+    for(i=0; i<7; i++)
+   
+        screen[i] = numbers[number][i] << 2;
+    }
+}
+
+
+/*========================================================
+                       MODE 4
+========================================================*/
+
+void draw_mode4(void)
+{
+    unsigned char i;
+
+    draw_mode3();
+
+    for(i=0; i<8; i++)
+    {
+        screen[i] = ~screen[i];
+    }
+}
+
+
+/*========================================================
+                       MODE 5
+========================================================*/
+
+void draw_mode5(void)
+{
+    unsigned char r;
+    unsigned char c;
+    unsigned char data;
+
+    clear_screen();
+
+    for(r=0; r<7; r++)
+    {
+        data = numbers[number][r];
+
+        for(c=0; c<5; c++)
+        {
+            if(data & (1 << (4-c)))
+            {
+                screen[c] |= (1 << (6-r));
+            }
+        }
+    }
+}
+
+
+/*========================================================
+                       MODE 6
+========================================================*/
+
+void draw_mode6(void)
+{
+    unsigned char r;
+    unsigned char c;
+    unsigned char data;
+
+    signed char new_column;
+
+    clear_screen();
+
+    for(r=0; r<7; r++)
+    {
+        data = numbers[number][r];
+
+        for(c=0; c<5; c++)
+        {
+            if(data & (1 << (4-c)))
+            {
+                new_column = scroll_position + c;
+
+                if(new_column >= 0 && new_column < 8)
+                {
+                    screen[r] |= (1 << new_column);
+                }
+            }
+        }
+    }
+}
+
+
+/*========================================================
+                    READ KEYS
+========================================================
+
+Œ—ÊÃÌ:
+
+0  = ÂÌç ò·ÌœÌ
+1  = KEY1
+2  = KEY2
+3  = KEY3
+4  = KEY1 + KEY2
+5  = KEY1 + KEY3
+========================================================*/
+
+unsigned char read_keys(void)
+{
+    unsigned char k1;
+    unsigned char k2;
+    unsigned char k3;
+
+    /*
+       çÊ‰ Pull-up œ«—Ì„:
+
+       0 = Pressed
+       1 = Released
+    */
+
+    k1 = ((PIND & (1 << KEY1)) == 0);
+    k2 = ((PIND & (1 << KEY2)) == 0);
+    k3 = ((PIND & (1 << KEY3)) == 0);
+
+
+    /*
+       «Ê·  —òÌ»ùÂ«
+    */
+
+    if(k1 && k2 && !k3)
+        return 4;
+
+    if(k1 && !k2 && k3)
+        return 5;
+
+
+    /*
+       »⁄œ ò·ÌœÂ«Ì  òÌ
+    */
+
+    if(k1 && !k2 && !k3)
+        return 1;
+
+    if(!k1 && k2 && !k3)
+        return 2;
+
+    if(!k1 && !k2 && k3)
+        return 3;
+
+
+    return 0;
+}
+
+
+/*========================================================
+                LONG PRESS + RELEASE
+========================================================*/
+
+unsigned char get_command(void)
+{
+    unsigned char key;
+    unsigned char current;
+    unsigned int counter;
+
+
+    /*
+       »»Ì‰ ¬Ì« ò·ÌœÌ ›‘—œÂ ‘œÂø
+    */
+
+    key = read_keys();
+
+    if(key == 0)
+        return 0;
+
+
+    /*
+       Debounce «Ê·ÌÂ
+    */
+
+    delay_ms(20);
+
+    current = read_keys();
+
+    if(current != key)
+        return 0;
+
+
+    /*
+       ò·Ìœ »«Ìœ 1 À«‰ÌÂ ‰êÂ œ«‘ Â ‘Êœ
+    */
+
+    counter = 0;
+
+    while(counter < HOLD_TIME)
+    {
+
+        matrix_refresh();
+
+        current = read_keys();
+
+        if(current != key)
+        {
+            return 0;
+        }
+
+        counter++;
+    }
+
+
+    /*
+       Õ«·« 1 À«‰ÌÂ ò«„· ‰êÂ œ«‘ Â ‘œÂ.
+       
+       Â‰Ê“ Mode  €ÌÌ— ‰„Ìùò‰œ.
+       
+       „‰ Ÿ— Release „Ìù„«‰Ì„.
+    */
+
+    while(read_keys() == key)
+    {
+        matrix_refresh();
+    }
+
+
+    /*
+       Debounce Â‰ê«„ Release
+    */
+
+    delay_ms(20);
+
+
+    /*
+       Õ«·« Command „⁄ »— «” .
+    */
+
+    return key;
+}
+
+
+
+void change_mode(unsigned char command)
+{
+    /*
+       KEY1
+       MODE 2
+    */
+
+    if(command == 1)
+    {
+        mode = MODE2;
+    }
+
+
+    /*
+       KEY2
+       MODE 3
+    */
+
+    else if(command == 2)
+    {
+        mode = MODE3;
+    }
+
+
+    /*
+       KEY3
+       MODE 4
+    */
+
+    else if(command == 3)
+    {
+        mode = MODE4;
+    }
+
+
+    /*
+       KEY1 + KEY2
+       MODE 5
+    */
+
+    else if(command == 4)
+    {
+        mode = MODE5;
+    }
+
+
+    /*
+       KEY1 + KEY3
+       MODE 6
+    */
+
+    else if(command == 5)
+    {
+        mode = MODE6;
+    }
+
+
+    /*
+       Reset variables
+    */
+
+    animation_time = 0;
+
+    column = 7;
+    direction = 0;
+
+    border_position = 0;
+
+    number = 0;
+
+    scroll_position = 8;
+}
+
+
+/*========================================================
+                         MAIN
+========================================================*/
+
+void main(void)
+{
+    unsigned char command;
+
+
+    /*
+    =====================================================
+                       MATRIX
+    =====================================================
+    */
+
+    DDRA = 0xFF;
+    DDRC = 0xFF;
+
+
+    /*
+    =====================================================
+                        KEYS
+    =====================================================
+    */
+
+    /*
+       PD0
+       PD1
+       PD2
+
+       INPUT
+    */
+
+    DDRD &= ~(
+        (1 << KEY1) |
+        (1 << KEY2) |
+        (1 << KEY3)
+    );
+
+
+    /*
+       Internal Pull-up
+    */
+
+    PORTD |=
+        (1 << KEY1) |
+        (1 << KEY2) |
+        (1 << KEY3);
+
+
+    /*
+    =====================================================
+                      INITIALIZATION
+    =====================================================
+    */
+
+    clear_screen();
+
+    mode = MODE1;
+
+    column = 7;
+
+    direction = 0;
+
+    animation_time = 0;
+
+
+    /*
+    =====================================================
+                       MAIN LOOP
+    =====================================================
+    */
+
+    while(1)
+    {
+
+        /*
+        -------------------------------------------------
+                     CHECK BUTTON
+        -------------------------------------------------
+        */
+
+        command = get_command();
+
+        if(command != 0)
+        {
+            change_mode(command);
+        }
+
+
+        /*
+        =================================================
+                         MODE 1
+        =================================================
+        */
+
+        if(mode == MODE1)
+        {
+            draw_mode1();
+
+            animation_time++;
+
+            if(animation_time >= STEP_TIME)
+            {
+                animation_time = 0;
+
+                /*
+                   RIGHT ? LEFT
+                */
+
+                if(direction == 0)
+                {
+                    if(column > 0)
+                    {
+                        column--;
+                    }
+                    else
+                    {
+                        direction = 1;
+
+                        column = 1;
+                    }
+                }
+
+                /*
+                   LEFT ? RIGHT
+                */
+
+                else
+                {
+                    if(column < 7)
+                    {
+                        column++;
+                    }
+                    else
+                    {
+                        direction = 0;
+
+                        column = 6;
+                    }
+                }
+            }
+        }
+
+
+        /*
+        =================================================
+                         MODE 2
+        =================================================
+        */
+
+        else if(mode == MODE2)
+        {
+            draw_mode2();
+
+            animation_time++;
+
+            if(animation_time >= STEP_TIME)
+            {
+                animation_time = 0;
+
+                border_position++;
+
+                if(border_position >= 28)
+                {
+                    border_position = 0;
+                }
+            }
+        }
+
+
+        /*
+        =================================================
+                         MODE 3
+        =================================================
+        */
+
+        else if(mode == MODE3)
+        {
+            draw_mode3();
+
+            animation_time++;
+
+            if(animation_time >= NUMBER_TIME)
+            {
+                animation_time = 0;
+
+                number++;
+
+                if(number >= 10)
+                {
+                    number = 0;
+                }
+            }
+        }
+
+
+        /*
+        =================================================
+                         MODE 4
+        =================================================
+        */
+
+        else if(mode == MODE4)
+        {
+            draw_mode4();
+
+            animation_time++;
+
+            if(animation_time >= NUMBER_TIME)
+            {
+                animation_time = 0;
+
+                number++;
+
+                if(number >= 10)
+                {
+                    number = 0;
+                }
+            }
+        }
+
+
+        /*
+        =================================================
+                         MODE 5
+        =================================================
+        */
+
+        else if(mode == MODE5)
+        {
+            draw_mode5();
+
+            animation_time++;
+
+            if(animation_time >= NUMBER_TIME)
+            {
+                animation_time = 0;
+
+                number++;
+
+                if(number >= 10)
+                {
+                    number = 0;
+                }
+            }
+        }
+
+
+        /*
+        =================================================
+                         MODE 6
+        =================================================
+        */
+
+        else if(mode == MODE6)
+        {
+            draw_mode6();
+
+            animation_time++;
+
+            if(animation_time >= STEP_TIME)
+            {
+                animation_time = 0;
+
+                scroll_position--;
+
+                /*
+                   ⁄œœ ò«„·« «“ ”„  çÅ Œ«—Ã ‘œÂ
+                */
+
+                if(scroll_position < -4)
+                {
+                    scroll_position = 8;
+
+                    number++;
+
+                    if(number >= 10)
+                    {
+                        number = 0;
+                    }
+                }
+            }
+        }
+
+
+        /*
+        =================================================
+                   MATRIX REFRESH
+        =================================================
+        */
+
+        matrix_refresh();
+    }
+}

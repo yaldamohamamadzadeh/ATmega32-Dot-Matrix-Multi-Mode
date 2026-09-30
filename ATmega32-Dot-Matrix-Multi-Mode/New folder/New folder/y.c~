@@ -1,0 +1,362 @@
+/*****************************************************************************
+ * Å—ÊéÂ: —«Âù«‰œ«“Ì œ«  „« —Ì” 8x8 »« 6 Õ«·  ‰„«Ì‘ („‰ÊÌ ç—Œ‘Ì »« ò·Ìœ)
+ * „Ìò—Êò‰ —·— : ATmega32   |   ò«„Å«Ì·—: CodeVisionAVR   |   ò·«ò ›—÷Ì: 8MHz
+ *
+ * ============================ ›—÷Ì«  ”Œ ù«›“«—Ì ============================
+ * PORTA  -> —œÌ›ùÂ«Ì „« —Ì” (Rows)   : «“ ÿ—Ìﬁ  —«‰“Ì” Ê— NPN (BC547 „À·«)
+ *           »Ì =1 ->  —«‰“Ì” Ê— ¬‰ —œÌ› —Ê‘‰ (Row Active High «“ œÌœ MCU°
+ *            —«‰“Ì” Ê— „”Ì— GND —œÌ› —« »«“ „Ìùò‰œ - —«ÌÃù —Ì‰ ÿ—«ÕÌ)
+ * PORTB  -> ” Ê‰ùÂ«Ì „« —Ì” (Columns): „” ﬁÌ„ »« „ﬁ«Ê„  220-330 «Â„ »Â ¬‰œ LED
+ *           »Ì =1 -> ” Ê‰ HIGH («ê— —œÌ› Â„ ›⁄«· »«‘œ° ¬‰ LED —Ê‘‰ „Ìù‘Êœ)
+ * PORTC.0-> ò·Ìœ ? (Key1) -- Ê—ÊœÌ Pull-up œ«Œ·Ì -- Active Low
+ * PORTC.1-> ò·Ìœ ? (Key2) -- Ê—ÊœÌ Pull-up œ«Œ·Ì -- Active Low
+ * PORTC.2-> ò·Ìœ ? (Key3) -- Ê—ÊœÌ Pull-up œ«Œ·Ì -- Active Low
+ *
+ * «ê— ”Ì„ùò‘Ì Ê«ﬁ⁄Ìù  ›—ﬁ œ«—Â („À·« ò« œ „‘ —ò ” Ê‰ Ì« Ã«Ì Row/Col ⁄Ê÷)°
+ * ›ﬁÿ  «»⁄ scan_isr Å«ÌÌ‰ —Ê  ‰ŸÌ„ ò‰∫ »ﬁÌÂ „‰ÿﬁ œ” ù‰ŒÊ—œÂ „Ìù„Ê‰Â.
+ * ===========================================================================
+ *
+ * ============================ „‰ÿﬁ “„«‰ù»‰œÌ ============================
+ * «”ò‰ (—›—‘) „« —Ì” »« Timer0 —ÊÌ Overflow «‰Ã«„ „Ìù‘Â (»œÊ‰ Preload° ”«œÂ Ê
+ * »œÊ‰ Œÿ«Ì „Õ«”»« Ì): »« Prescaler=64 Ê ò·«ò 8MHz Â— Overflow ? 2.048ms ÿÊ·
+ * „Ìùò‘Â -> «Ì‰ Ì⁄‰Ì Â— —œÌ› Â— 2.048ms Ìòù»«— —Ê‘‰ „Ìù‘Â -> ò· ’›ÕÂ (? —œÌ›)
+ * Â— 16.4ms Ìòù»«— ò«„· —›—‘ „Ìù‘Â (~61Hz) => «“ œÌœ ç‘„ »œÊ‰ ç‘„òù“œ‰.
+ *
+ * »—«Ì  «Ì„Ì‰ê «‰Ì„Ì‘‰ (‰Ì„ùÀ«‰ÌÂ/ÌòùÀ«‰ÌÂ) Ê  ‘ŒÌ’ ‰êÂùœ«‘ ‰ ò·Ìœ° Ìò ‘„«—‰œÂ
+ * ”—«”—Ì sysTick œ«—Ì„ òÂ Â— Overflow ÌòÌ “Ì«œ „Ìù‘Â. çÊ‰ ›ﬁÿ »«  ›—Ìﬁ
+ * (current - start) „ﬁ«Ì”Â „Ìùò‰Ì„° Wraparound ÿ»Ì⁄Ì unsigned ŒÊœ‘ „‘ò·Ì
+ * «ÌÃ«œ ‰„Ìùò‰Â (œﬁÌﬁ« Â„Ê‰ „›ÂÊ„Ì òÂ ﬁ»·« œ—»«—Âù‘ ’Õ»  ò—œÌ„).
+ * ===========================================================================
+ */
+
+#include <io.h>
+#include <delay.h>
+
+/* ------------------------- À«» ùÂ«Ì “„«‰ù»‰œÌ (ﬁ«»·  ‰ŸÌ„) ------------------------- */
+#define TICKS_PER_500MS   244   /* 500ms  / 2.048ms  ? 244 */
+#define TICKS_PER_1000MS  488   /* 1000ms / 2.048ms  ? 488 */
+#define HOLD_TICKS_1S     488   /* Õœ«ﬁ·  Ìò ·«“„ »—«Ì "‰êÂùœ«‘ ‰ Ìò À«‰ÌÂ" */
+
+/* çÌœ„«‰ «⁄œ«œ —ÊÌ ’›ÕÂ (Mode 3/4) - ﬁ«»·  ‰ŸÌ„ «ê— ›«’·ÂùÂ« ›—ﬁ œ«‘  */
+#define MODE3_START_COL   2     /* —ﬁ„ «“ ” Ê‰ 2 ‘—Ê⁄ „Ìù‘Êœ (2 ” Ê‰ Œ«·Ì ”„  —«” ) */
+                                  /* —ﬁ„ 5 ” Ê‰ ⁄—÷ œ«—œ (” Ê‰ùÂ«Ì 2..6) -> 1 ” Ê‰ Œ«·Ì ”„  çÅ (” Ê‰7) */
+
+/* =============================== »«›— ‰„«Ì‘ =============================== */
+volatile unsigned char framebuffer[8]; /* framebuffer[row]: »Ì  i = Ê÷⁄Ì  ” Ê‰ i «“ ¬‰ —œÌ› */
+volatile unsigned int  sysTick = 0;    /* ‘„«—‰œÂ  Ìò ”—«”—Ì - Â— Overflow  «Ì„—0 ÌòÌ “Ì«œ „Ìù‘Êœ */
+
+/* =============================== ›Ê‰  «⁄œ«œ 0-9 =============================== */
+/* Â— —ﬁ„ 5 »«Ì  (5 ” Ê‰) œ«—œ∫ Â— »«Ì  7 »Ì  Å«ÌÌ‰Ì = 7 —œÌ› (»Ì 0=»«·« —Ì‰ —œÌ›) */
+flash unsigned char digitFont[10][5] = {
+    {0x3E,0x51,0x49,0x45,0x3E},  /* 0 */
+    {0x00,0x42,0x7F,0x40,0x00},  /* 1 */
+    {0x42,0x61,0x51,0x49,0x46},  /* 2 */
+    {0x21,0x41,0x45,0x4B,0x31},  /* 3 */
+    {0x18,0x14,0x12,0x7F,0x10},  /* 4 */
+    {0x27,0x45,0x45,0x45,0x39},  /* 5 */
+    {0x3C,0x4A,0x49,0x49,0x30},  /* 6 */
+    {0x01,0x71,0x09,0x05,0x03},  /* 7 */
+    {0x36,0x49,0x49,0x49,0x36},  /* 8 */
+    {0x06,0x49,0x49,0x29,0x1E}   /* 9 */
+};
+
+/* œ‰»«·Â 28 Œ«‰Â œÊ— «œÊ— „« —Ì” (Mode2) - ‘—Ê⁄ «“ »«·«-—«” ° ÃÂ  ”«⁄ ê—œ */
+flash unsigned char perimRow[28] = {0,1,2,3,4,5,6,7, 7,7,7,7,7,7,7, 6,5,4,3,2,1,0, 0,0,0,0,0,0};
+flash unsigned char perimCol[28] = {7,7,7,7,7,7,7,7, 6,5,4,3,2,1,0, 0,0,0,0,0,0,0, 1,2,3,4,5,6};
+
+/* =============================== Õ«· ùÂ« (Modes) =============================== */
+#define MODE_COLSCAN     1
+#define MODE_PERIMETER   2
+#define MODE_DIGITS      3
+#define MODE_DIGITS_NEG  4
+#define MODE_DIGITS_ROT  5
+#define MODE_MARQUEE     6
+
+unsigned char currentMode = MODE_COLSCAN;
+unsigned int  lastStepTick = 0;
+
+/* „ €Ì—Â«Ì Ê÷⁄Ì  Â— „Êœ (Â‰ê«„  ⁄ÊÌ÷ „Êœ° œ— reset_mode_state —Ì”  „Ìù‘Ê‰œ) */
+signed char   colPos, colDir;      /* Mode1 */
+unsigned char perimIdx;            /* Mode2 */
+unsigned char digitVal;            /* Mode3/4/5 */
+unsigned char marqueeOffset;       /* Mode6 */
+unsigned char marqueeStrip[60];    /* ‰Ê«— „Ã«“Ì —ﬁ„ùÂ«Ì 0..9 »« Ìò ” Ê‰ Œ«·Ì »Ì‰ù‘«‰ */
+
+/* ===============================  Ê«»⁄ ò„òÌ »«›— =============================== */
+void clear_framebuffer(void)
+{
+    unsigned char i;
+    for(i = 0; i < 8; i++) framebuffer[i] = 0x00;
+}
+
+/* —”„ Ìò —ﬁ„ œ— ” Ê‰ ‘—Ê⁄ „‘Œ’° »« œ— ‰Ÿ— ê—› ‰ „«”ò —œÌ› (»—«Ì Mode5 «” ›«œÂ „Ìù‘Êœ) */
+void draw_digit(unsigned char digit, unsigned char startCol, unsigned char rowMask)
+{
+    unsigned char c, r;
+    clear_framebuffer();
+    for(c = 0; c < 5; c++)
+    {
+        unsigned char colData = digitFont[digit][c];
+        for(r = 0; r < 7; r++)
+        {
+            if( (colData & (1 << r)) && (rowMask & (1 << r)) )
+            {
+                framebuffer[r] |= (1 << (startCol + c));
+            }
+        }
+    }
+}
+
+/* „⁄òÊ” ò—œ‰ ò· ’›ÕÂ (Mode4 = ‰ê« ÌÊ Mode3) */
+void invert_framebuffer(void)
+{
+    unsigned char i;
+    for(i = 0; i < 8; i++) framebuffer[i] = ~framebuffer[i];
+}
+
+/* ç—Œ‘ 90 œ—ÃÂ (”«⁄ ê—œ) ò· »«›— - »—«Ì Mode5 */
+void rotate90_framebuffer(void)
+{
+    unsigned char tmp[8];
+    unsigned char r, c;
+    for(r = 0; r < 8; r++) tmp[r] = 0x00;
+
+    for(r = 0; r < 8; r++)
+    {
+        for(c = 0; c < 8; c++)
+        {
+            if(framebuffer[r] & (1 << c))
+            {
+                tmp[c] |= (1 << (7 - r));
+            }
+        }
+    }
+    for(r = 0; r < 8; r++) framebuffer[r] = tmp[r];
+}
+
+/* ”«Œ  ‰Ê«— —Ê«‰ (Marquee) ‘«„· —ﬁ„ùÂ«Ì 0  « 9 Å‘  ”— Â„ »« Ìò ” Ê‰ Œ«·Ì »Ì‰‘«‰ */
+void build_marquee_strip(void)
+{
+    unsigned char d, c, idx = 0;
+    for(d = 0; d < 10; d++)
+    {
+        for(c = 0; c < 5; c++)
+        {
+            marqueeStrip[idx++] = digitFont[d][c];
+        }
+        marqueeStrip[idx++] = 0x00;   /* Ìò ” Ê‰ Œ«·Ì Ãœ«ò‰‰œÂ */
+    }
+    /* idx «Ì‰Ã« »«Ìœ œﬁÌﬁ« 60 ‘Êœ: 10*(5+1) */
+}
+
+/* =============================== —Ì”  Ê÷⁄Ì  Â‰ê«„  ⁄ÊÌ÷ „Êœ =============================== */
+void reset_mode_state(void)
+{
+    colPos = 7; colDir = -1;   /* Mode1: ‘—Ê⁄ «“ —«”  (” Ê‰ 7) »Â çÅ */
+    perimIdx = 0;               /* Mode2: ‘—Ê⁄ «“ »«·«-—«”  */
+    digitVal = 0;                /* Mode3/4/5: ‘—Ê⁄ «“ —ﬁ„ 0 */
+    marqueeOffset = 0;           /* Mode6 */
+    lastStepTick = sysTick;
+    clear_framebuffer();
+}
+
+/* =============================== »Âù—Ê“—”«‰Ì Â— „Êœ (€Ì—ù»·«òùò‰‰œÂ) =============================== */
+
+void update_mode1_colscan(void)
+{
+    unsigned char row;
+    if((unsigned int)(sysTick - lastStepTick) < TICKS_PER_500MS) return;
+    lastStepTick = sysTick;
+
+    clear_framebuffer();
+    for(row = 0; row < 8; row++)
+    {
+        framebuffer[row] = (1 << colPos);
+    }
+
+    colPos += colDir;
+    if(colPos <= 0)      { colPos = 0; colDir = +1; }
+    else if(colPos >= 7) { colPos = 7; colDir = -1; }
+}
+
+void update_mode2_perimeter(void)
+{
+    if((unsigned int)(sysTick - lastStepTick) < TICKS_PER_500MS) return;
+    lastStepTick = sysTick;
+
+    clear_framebuffer();
+    framebuffer[perimRow[perimIdx]] |= (1 << perimCol[perimIdx]);
+
+    perimIdx++;
+    if(perimIdx >= 28) perimIdx = 0;
+}
+
+void update_mode3_digits(void)
+{
+    if((unsigned int)(sysTick - lastStepTick) < TICKS_PER_1000MS) return;
+    lastStepTick = sysTick;
+
+    draw_digit(digitVal, MODE3_START_COL, 0x7F);  /* Â— 7 —œÌ› ›Ê‰  «” ›«œÂ ‘Êœ */
+
+    digitVal++;
+    if(digitVal >= 10) digitVal = 0;
+}
+
+void update_mode4_digits_negative(void)
+{
+    if((unsigned int)(sysTick - lastStepTick) < TICKS_PER_1000MS) return;
+    lastStepTick = sysTick;
+
+    draw_digit(digitVal, MODE3_START_COL, 0x7F);
+    invert_framebuffer();
+
+    digitVal++;
+    if(digitVal >= 10) digitVal = 0;
+}
+
+void update_mode5_digits_rotated(void)
+{
+    if((unsigned int)(sysTick - lastStepTick) < TICKS_PER_1000MS) return;
+    lastStepTick = sysTick;
+
+    /* ›ﬁÿ —œÌ›ùÂ«Ì 1..6 ›Ê‰  «” ›«œÂ „Ìù‘Êœ (‰Â —œÌ›0)  « »⁄œ «“ ç—Œ‘°
+       œﬁÌﬁ« Ìò ” Ê‰ Œ«·Ì Â— ÿ—› (” Ê‰0 Ê ” Ê‰7) »«ﬁÌ »„«‰œ */
+    draw_digit(digitVal, 1, 0x7E);
+    rotate90_framebuffer();
+
+    digitVal++;
+    if(digitVal >= 10) digitVal = 0;
+}
+
+void update_mode6_marquee(void)
+{
+    unsigned char d, stripCol, bitVal, r;
+    if((unsigned int)(sysTick - lastStepTick) < TICKS_PER_500MS) return;
+    lastStepTick = sysTick;
+
+    clear_framebuffer();
+    for(d = 0; d < 8; d++)
+    {
+        stripCol = (marqueeOffset + d) % 60;
+        bitVal = marqueeStrip[stripCol];
+        for(r = 0; r < 7; r++)
+        {
+            if(bitVal & (1 << r))
+            {
+                framebuffer[r] |= (1 << d);
+            }
+        }
+    }
+
+    marqueeOffset++;
+    if(marqueeOffset >= 60) marqueeOffset = 0;
+}
+
+void run_current_mode(void)
+{
+    switch(currentMode)
+    {
+        case MODE_COLSCAN:    update_mode1_colscan();            break;
+        case MODE_PERIMETER:  update_mode2_perimeter();          break;
+        case MODE_DIGITS:     update_mode3_digits();             break;
+        case MODE_DIGITS_NEG: update_mode4_digits_negative();    break;
+        case MODE_DIGITS_ROT: update_mode5_digits_rotated();     break;
+        case MODE_MARQUEE:    update_mode6_marquee();            break;
+    }
+}
+
+/* =============================== „œÌ—Ì  ò·ÌœÂ« (Hold >= 1s) =============================== */
+#define COMBO_NONE   0
+#define COMBO_K1     1
+#define COMBO_K2     2
+#define COMBO_K3     3
+#define COMBO_K1K2   4
+#define COMBO_K1K3   5
+
+unsigned char prevCombo = COMBO_NONE;
+unsigned int  comboStartTick = 0;
+
+unsigned char read_combo(void)
+{
+    unsigned char k1 = ((PINC & (1 << PC0)) == 0);
+    unsigned char k2 = ((PINC & (1 << PC1)) == 0);
+    unsigned char k3 = ((PINC & (1 << PC2)) == 0);
+
+    if(k1 && k2)      return COMBO_K1K2;
+    if(k1 && k3)      return COMBO_K1K3;
+    if(k1)            return COMBO_K1;
+    if(k2)            return COMBO_K2;
+    if(k3)            return COMBO_K3;
+    return COMBO_NONE;
+}
+
+void handle_buttons(void)
+{
+    unsigned char nowCombo = read_combo();
+
+    if(nowCombo != COMBO_NONE && prevCombo == COMBO_NONE)
+    {
+        /* ‘—Ê⁄  «“Â Ìò ›‘«—/ —òÌ» ÃœÌœ */
+        comboStartTick = sysTick;
+    }
+
+    if(nowCombo == COMBO_NONE && prevCombo != COMBO_NONE)
+    {
+        /* ò·Ìœ(Â«) —Â« ‘œ‰œ - »——”Ì „œ  ‰êÂùœ«‘ ‰ */
+        unsigned int heldTicks = (unsigned int)(sysTick - comboStartTick);
+        if(heldTicks >= HOLD_TICKS_1S)
+        {
+            switch(prevCombo)
+            {
+                case COMBO_K1:    currentMode = MODE_PERIMETER;  break;
+                case COMBO_K2:    currentMode = MODE_DIGITS;     break;
+                case COMBO_K3:    currentMode = MODE_DIGITS_NEG; break;
+                case COMBO_K1K2:  currentMode = MODE_DIGITS_ROT; break;
+                case COMBO_K1K3:  currentMode = MODE_MARQUEE;    break;
+            }
+            reset_mode_state();
+        }
+    }
+
+    prevCombo = nowCombo;
+}
+
+/* =============================== Êﬁ›Â «”ò‰ „« —Ì” (Timer0 Overflow) =============================== */
+interrupt [TIM0_OVF] void timer0_ovf_isr(void)
+{
+    static unsigned char curRow = 0;
+
+    PORTA = 0x00;                    /* Œ«„Ê‘ ò—œ‰ —œÌ› ﬁ»·Ì (Ã·ÊêÌ—Ì «“ Ghosting) */
+    PORTB = framebuffer[curRow];     /* ‰Ê‘ ‰ «·êÊÌ ” Ê‰ùÂ«Ì «Ì‰ —œÌ› */
+    PORTA = (1 << curRow);           /* ›⁄«· ò—œ‰ «Ì‰ —œÌ› */
+
+    curRow++;
+    if(curRow >= 8) curRow = 0;
+
+    sysTick++;
+}
+
+/* =============================== main =============================== */
+void main(void)
+{
+    /* ÅÌò—»‰œÌ ÅÊ— ùÂ« */
+    DDRA = 0xFF;  PORTA = 0x00;      /* —œÌ›ùÂ«: Œ—ÊÃÌ */
+    DDRB = 0xFF;  PORTB = 0x00;      /* ” Ê‰ùÂ«: Œ—ÊÃÌ */
+    DDRC &= ~((1 << PC0) | (1 << PC1) | (1 << PC2));   /* ò·ÌœÂ«: Ê—ÊœÌ */
+    PORTC |=  ((1 << PC0) | (1 << PC1) | (1 << PC2));  /* Pull-up œ«Œ·Ì ›⁄«· */
+
+    /* Timer0: Prescaler = 64 -> Â— Overflow ? 2.048ms @ 8MHz */
+    TCCR0 = (1 << CS01) | (1 << CS00);
+    TIMSK |= (1 << TOIE0);
+
+    #asm("sei")
+
+    build_marquee_strip();
+    reset_mode_state();
+
+    while(1)
+    {
+        handle_buttons();
+        run_current_mode();
+    }
+}
